@@ -1,3 +1,5 @@
+; Receive signal from the PC with USART communication and send it to the shift register connected to a bar LED using SPI communication
+
 .include "m324padef.inc" 				; Include Atmega324a definition
 
 .org 0x0000
@@ -80,7 +82,8 @@ shiftoutdata:
 		; Latch data
 		sbi latchPort, latchPin ; Set latch pin to high
 		cbi latchPort, latchPin ; Set latch pin to low
-ret
+ret
+
 SPI_MAS_INIT : 
 	PUSH R20
 	LDI R20, (1 << MOSI) | (1 << SCK) | (1 << SS)|(1<<clearSignalPin)|(1<<latchPin)
