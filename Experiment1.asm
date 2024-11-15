@@ -1,5 +1,10 @@
 .include "m324padef.inc"
 ; Replace with your application code
+.ORG 0
+JMP MAIN
+.ORG 0x40
+
+MAIN:
  call USART_Init
 
 start:
