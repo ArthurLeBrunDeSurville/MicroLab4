@@ -1,54 +1,160 @@
-;
-; AssemblerApplication1.asm
-;
-; Created: 12/11/2024 18:11:28
-; Author : ArthurLBDS
-;
+.include "m324padef.inc" 				; Include Atmega324a definition
+
+.org 0x0000
+RJMP RESET_HANDLER 
+.org 0x0028
+RJMP RECEIVE_COMPLETE
+
+.def shiftData = r20 				; Define the shift data register
+.equ clearSignalPort = PORTB 			; Set clear signal port to PORTB
+.equ clearSignalPin = 0 			; Set clear signal pin to pin 0 of PORTB
+.equ shiftClockPort = PORTB 			; Set shift clock port to PORTB
+.equ shiftClockPin = 7
+.equ shiftDataPin = 5
+.equ SCK = 7 				; Set shift clock pin to pin 1 of PORTB
+.equ latchPort = PORTB 				; Set latch port to PORTB
+.equ latchPin = 1 				; Set latch pin to pin 1 of PORTB
+.equ shiftDataPort = PORTB 			; Set shift data port to PORTB
+.equ MOSI = 5 				; Set shift data pin to pin 5 of PORTB
+.equ SS = 4
+.equ SPE = 6
+.equ MSTR = 4
+.equ SPR0 = 0
+.equ SPR1 = 1
+.equ SPRX = 0
+.equ SPCR = 0x2C  ; I/O address
+.equ SPDR = 0x2E  ; I/O address
+.equ SPSR = 0X2D  ; I/O address
+.equ SPIF = 7
+.equ RXCIEN0 = 7
 
 
 
-INIT:
-; set timer 2 as asynchronous to generate 1Hz signal
-LDI R16, (1<<CS21)|(1<<CS20)  ; prescaler clk/32 for 1Hz signal
-STS TCCR2B, R16
-LDI R16, (1<<AS2)
-STS ASSR, R16
 
+.macro  INIT_SP
+	LDI R16, HIGH(RAMEND)
+	OUT SPH, R16
+	LDI R16, LOW(RAMEND)
+	OUT SPL, R16
+.endmacro
+.cseg
+RESET_HANDLER:
+	INIT_SP
+	CALL SPI_MAS_INIT
+	call cleardata
+	CALL USART_INIT
+	SEI       ; ENABLE global interrupt
+	
+MAIN:	
+	call usart_sendchar
+	call cleardata
 
-SEND_START_CONDITION:
+	call receive_complete
+	call shiftoutdata
+	CALL USART_RECEIVECHAR
 
-/*
-TWINT -> This bit is set by hardware when the TWI has finished its current job and expects application software response.
-If the I-bit in SREG and TWIE in TWCR are set, the MCU will jump to the TWI Interrupt Vector. While the TWINT
-Flag is set, the SCL low period is stretched. The TWINT Flag must be cleared by software by writing a logic one
-to it. Note that this flag is not automatically cleared by hardware when executing the interrupt routine.
+	RJMP MAIN
+						; Initialize ports as outputs
 
-TWSTA -> The application writes the TWSTA bit to one when it desires to become a Master on the two-wire Serial Bus.
-The TWI hardware checks if the bus is available, and generates a START condition on the bus if it is free.
-However, if the bus is not free, the TWI waits until a STOP condition is detected, and then generates a new
-START condition to claim the bus Master status. TWSTA must be cleared by software when the START
-condition has been transmitted.
+	
+cleardata:
+	cbi clearSignalPort, clearSignalPin 	; Set clear signal pin to low
+						; Wait for a short time
+	sbi clearSignalPort, clearSignalPin 	; Set clear signal pin to high
+	NOP
+	ret
 
-TWEN -> The TWEN bit enables TWI operation and activates the TWI interface. When TWEN is written to one, the TWI
-takes control over the I/O pins connected to the SCL and SDA pins, enabling the slew-rate limiters and spike
-filters. If this bit is written to zero, the TWI is switched off and all TWI transmissions are terminated, regardless of
-any ongoing operation
-*/
+; Shift out data
+shiftoutdata:
+	cbi shiftClockPort, shiftClockPin ;
+	ldi r17, 8 ; Shift 8 bits
+	shiftloop:
+		sbrc shiftData, 7 ; Check if the MSB of shiftData is 1
+		sbi shiftDataPort, shiftDataPin ; Set shift data pin to high
+		sbi shiftClockPort, shiftClockPin ; Set shift clock pin to high
+		lsl shiftData ; Shift left
+		cbi shiftClockPort, shiftClockPin ; Set shift clock pin to low
+		cbi shiftDataPort, shiftDataPin ; Set shift data pin to low
+		dec r18
+		brne shiftloop
+		; Latch data
+		sbi latchPort, latchPin ; Set latch pin to high
+		cbi latchPort, latchPin ; Set latch pin to low
+ret
+SPI_MAS_INIT : 
+	PUSH R20
+	LDI R20, (1 << MOSI) | (1 << SCK) | (1 << SS)|(1<<clearSignalPin)|(1<<latchPin)
+	OUT DDRB, R20
 
-	PUSH R16
-	LDI R16, (1<<TWINT)|(1<<TWSTA)|(1<<TWEN)
-	STS TWCR, R16
-	POP R16
+	LDI R20,  (1 << SPE) | (1 << MSTR) | (1 << SPR0)
+	OUT SPCR, R20
+
+	POP R20
 	RET
 
-
-STOP_CONDITION:
-/*
-TWSTO -> Writing the TWSTO bit to one in Master mode will generate a STOP condition on the two-wire Serial Bus. When
-the STOP condition is executed on the bus, the TWSTO bit is cleared automatically
-*/
-	PUSH R16
-	LDI R16, (1<<TWINT)|(1<<TWEN)|(1<<TWSTO)
-	STS TWCR, r16
-	POP R16
+SPI_TRANSMISSION :
+	PUSH R20
+	CBI PORTB, SS
+	 ; R17 = SEND DATA
+	OUT SPDR, R17
+WAIT_SPI : 
+	IN R20, SPSR
+	SBRS R20, SPIF
+	RJMP WAIT_SPI
+	IN R18, SPDR    ; R18 = RECEIVED DATA
+	ldi r19,32
+	sub r18,r19
+	SBI PORTB, SS
+	CBI PORTB, latchPin 
+	NOP
+	SBI PORTB, latchPin
+	POP R20
 	RET 
+
+RECEIVE_COMPLETE :
+	MOV R17, R16
+	CALL SPI_TRANSMISSION
+	RET	
+			
+USART_INIT:
+	; SET BAUD RATE TO 9600 BPS WITH 8 MHZ CLOCK
+	LDI R16, 103
+	STS UBRR0L, R16
+	; SET FRAME FORMAT: 8 DATA BITS, NO PARITY, 1 STOP BIT
+	LDI R16, (1 << UCSZ01) | (1 << UCSZ00) 
+	STS UCSR0C, R16
+	;set double speed
+	ldi r16, (1 << U2X0)
+	sts UCSR0A, r16
+	; ENABLE TRANSMITTER AND RECEIVER
+	LDI R16, (1 << RXEN0) | (1 << TXEN0) | (1 << RXCIEN0)
+	STS UCSR0B, R16
+	RET
+
+;SEND OUT 1 BYTE IN R16
+USART_SENDCHAR:
+	PUSH R17
+; WAIT FOR THE TRANSMITTER TO BE READY
+USART_SENDCHAR_WAIT:
+	LDS R17, UCSR0A
+	SBRS R17, UDRE0 	;CHECK USART DATA REGISTER EMPTY BIT
+	RJMP USART_SENDCHAR_WAIT
+	STS UDR0, R16 		;SEND OUT
+	POP R17
+	RET
+
+;RECEIVE 1 BYTE IN R16
+USART_RECEIVECHAR:
+	PUSH R17
+; WAIT FOR THE TRANSMITTER TO BE READY
+USART_RECEIVECHAR_WAIT:
+
+	LDS R17, UCSR0A
+	SBRS R17, RXC0 ;CHECK USART RECEIVE COMPLETE BIT
+	RJMP USART_RECEIVECHAR_WAIT
+
+	LDS R16, UDR0 ;GET DATA
+	OUT PORTA, R16
+
+	POP R17
+	RET
